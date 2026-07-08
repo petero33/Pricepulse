@@ -1,0 +1,16 @@
+{
+  "name": "pricepulse-kenya",
+  "private": true,
+  "workspaces": [
+    "apps/api"
+  ],
+  "scripts": {
+    "build": "npm --prefix apps/api run build",
+    "build:api": "npm --prefix apps/api run build",
+    "test": "npm --prefix apps/api test",
+    "test:api": "npm --prefix apps/api test",
+    "lint": "npm --prefix apps/api run lint",
+    "lint:api": "npm --prefix apps/api run lint",
+    "start:api": "npm --prefix apps/api run start:dev"
+  }
+}

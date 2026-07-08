@@ -1,0 +1,455 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AuthProvider {
+  GOOGLE
+  APPLE
+  PHONE
+  EMAIL
+}
+
+enum UserRole {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum PriceSource {
+  MANUAL       // user typed price manually
+  RECEIPT_OCR  // extracted from uploaded receipt
+  BARCODE_SCAN // scanned barcode at store
+  ADMIN        // admin direct entry
+  SCRAPER      // web scraper (Phase 4)
+}
+
+enum VerificationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  DISPUTED
+}
+
+enum VoteType {
+  CONFIRM  // "Yes, I saw this price too"
+  DISPUTE  // "This price looks wrong"
+}
+
+enum OcrStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  NEEDS_REVIEW
+}
+
+enum RewardReason {
+  PRICE_SUBMISSION      // +10
+  RECEIPT_UPLOAD        // +50
+  BARCODE_MATCH         // +30
+  VERIFICATION_VOTE     // +5
+  SUBMISSION_VERIFIED   // +20 bonus when community confirms your price
+  DAILY_STREAK          // +15
+  REFERRAL              // +100
+  PROFILE_COMPLETE      // +25
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id                  String       @id @default(cuid())
+  email               String?      @unique
+  phone               String?      @unique
+  displayName         String
+  avatarUrl           String?
+  provider            AuthProvider
+  providerId          String?
+  // Reputation: 0.0 (unverified new) → 1.0 (highly trusted contributor)
+  // New users start at 0.2. Rises with verified submissions, falls with rejections.
+  reputationScore     Float        @default(0.2)
+  totalSubmissions    Int          @default(0)
+  verifiedSubmissions Int          @default(0)
+  totalPoints         Int          @default(0)
+  currentStreak       Int          @default(0)
+  lastActiveAt        DateTime?
+  role                UserRole     @default(USER)
+  isActive            Boolean      @default(true)
+  referralCode        String?      @unique @default(cuid())
+  referredById        String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  referredBy          User?        @relation("Referrals", fields: [referredById], references: [id])
+  referrals           User[]       @relation("Referrals")
+  priceReports        PriceReport[]
+  receipts            Receipt[]
+  shoppingLists       ShoppingList[]
+  rewards             Reward[]
+  favorites           Favorite[]
+  priceAlerts         PriceAlert[]
+  votes               VerificationVote[]
+  refreshTokens       RefreshToken[]
+  otpRequests         OtpRequest[]
+
+  @@index([phone])
+  @@index([email])
+  @@index([reputationScore])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model OtpRequest {
+  id        String   @id @default(cuid())
+  phone     String
+  otp       String   // hashed
+  expiresAt DateTime
+  verified  Boolean  @default(false)
+  attempts  Int      @default(0)
+  userId    String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([phone])
+  @@map("otp_requests")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Store {
+  id        String   @id @default(cuid())
+  name      String                     // "Naivas", "Carrefour"
+  slug      String   @unique           // "naivas", "carrefour"
+  logoUrl   String?
+  website   String?
+  color     String?                    // brand color e.g. "#E63946"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches  Branch[]
+  offers    Offer[]
+
+  @@map("stores")
+}
+
+model Branch {
+  id          String   @id @default(cuid())
+  storeId     String
+  name        String                   // "Naivas Westgate"
+  slug        String?  @unique
+  address     String
+  city        String   @default("Nairobi")
+  county      String   @default("Nairobi")
+  latitude    Float?
+  longitude   Float?
+  phone       String?
+  openingTime String?                  // "08:00"
+  closingTime String?                  // "21:00"
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  store       Store    @relation(fields: [storeId], references: [id])
+  priceReports PriceReport[]
+  receipts    Receipt[]
+
+  @@index([storeId])
+  @@index([city])
+  @@index([latitude, longitude])
+  @@map("branches")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Category {
+  id        String     @id @default(cuid())
+  name      String     @unique          // "Dairy & Eggs", "Cereals & Grains"
+  slug      String     @unique
+  iconUrl   String?
+  color     String?                     // for UI badges
+  parentId  String?
+  sortOrder Int        @default(0)
+
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique           // "Brookside", "Bidco", "Procter & Gamble"
+  slug      String   @unique
+  logoUrl   String?
+  country   String?  @default("Kenya")
+
+  products  Product[]
+
+  @@map("brands")
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  name          String                       // "Brookside Full Cream Milk 500ml"
+  slug          String   @unique
+  barcode       String?  @unique             // EAN-13 / UPC barcode
+  categoryId    String
+  brandId       String?
+  imageUrl      String?
+  unit          String?                      // "500ml", "1kg", "6-pack", "each"
+  description   String?
+  isVerified    Boolean  @default(false)     // admin-verified product data
+  isActive      Boolean  @default(true)
+  viewCount     Int      @default(0)
+  reportCount   Int      @default(0)         // cache for sorting
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  category      Category @relation(fields: [categoryId], references: [id])
+  brand         Brand?   @relation(fields: [brandId], references: [id])
+  priceReports  PriceReport[]
+  favorites     Favorite[]
+  shoppingItems ShoppingListItem[]
+  priceAlerts   PriceAlert[]
+  receiptItems  ReceiptItem[]
+
+  @@index([barcode])
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([slug])
+  @@map("products")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRICE EVENTS — The Secret Sauce
+// We NEVER store "current price". We store price history events.
+// The "current price" is always derived: latest ACCEPTED event per (product, branch).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PriceReport {
+  id                String             @id @default(cuid())
+  productId         String
+  branchId          String
+  reportedById      String
+  price             Decimal            @db.Decimal(10, 2)
+  currency          String             @default("KES")
+  receiptId         String?            // linked receipt if from OCR
+  source            PriceSource
+  verificationScore Float              @default(0)
+  status            VerificationStatus @default(PENDING)
+  reportedAt        DateTime           @default(now())
+  isPromotion       Boolean            @default(false)
+  promotionEndsAt   DateTime?
+  notes             String?            // optional note from reporter
+
+  product           Product            @relation(fields: [productId], references: [id])
+  branch            Branch             @relation(fields: [branchId], references: [id])
+  reportedBy        User               @relation(fields: [reportedById], references: [id])
+  receipt           Receipt?           @relation(fields: [receiptId], references: [id])
+  verifications     VerificationVote[]
+
+  @@index([productId, branchId, reportedAt(sort: Desc)])
+  @@index([productId, reportedAt(sort: Desc)])
+  @@index([branchId, reportedAt(sort: Desc)])
+  @@index([status])
+  @@index([reportedById])
+  @@map("price_reports")
+}
+
+model VerificationVote {
+  id            String      @id @default(cuid())
+  priceReportId String
+  userId        String
+  vote          VoteType
+  createdAt     DateTime    @default(now())
+
+  priceReport   PriceReport @relation(fields: [priceReportId], references: [id])
+  user          User        @relation(fields: [userId], references: [id])
+
+  @@unique([priceReportId, userId])  // one vote per user per report
+  @@map("verification_votes")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RECEIPTS & OCR
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Receipt {
+  id            String        @id @default(cuid())
+  uploadedById  String
+  branchId      String?
+  imageUrl      String                    // Firebase Storage URL
+  status        OcrStatus     @default(PENDING)
+  rawOcrText    String?                   // raw Tesseract output
+  processedAt   DateTime?
+  totalAmount   Decimal?      @db.Decimal(10, 2)  // parsed total from receipt
+  createdAt     DateTime      @default(now())
+
+  uploadedBy    User          @relation(fields: [uploadedById], references: [id])
+  branch        Branch?       @relation(fields: [branchId], references: [id])
+  items         ReceiptItem[]
+  priceReports  PriceReport[]
+
+  @@index([uploadedById])
+  @@index([status])
+  @@map("receipts")
+}
+
+model ReceiptItem {
+  id          String   @id @default(cuid())
+  receiptId   String
+  rawText     String               // what OCR extracted e.g. "BROOKSIDE MILK 0.5L"
+  productId   String?              // null until matched to Product
+  price       Decimal  @db.Decimal(10, 2)
+  quantity    Int      @default(1)
+  confidence  Float    @default(0) // OCR confidence 0.0–1.0
+
+  receipt     Receipt  @relation(fields: [receiptId], references: [id])
+  product     Product? @relation(fields: [productId], references: [id])
+
+  @@index([receiptId])
+  @@map("receipt_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHOPPING
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ShoppingList {
+  id          String            @id @default(cuid())
+  userId      String
+  name        String            @default("My Basket")
+  isPublic    Boolean           @default(false)
+  isDefault   Boolean           @default(false)  // one default list per user
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user        User              @relation(fields: [userId], references: [id])
+  items       ShoppingListItem[]
+
+  @@index([userId])
+  @@map("shopping_lists")
+}
+
+model ShoppingListItem {
+  id              String       @id @default(cuid())
+  shoppingListId  String
+  productId       String
+  quantity        Int          @default(1)
+  addedAt         DateTime     @default(now())
+
+  shoppingList    ShoppingList @relation(fields: [shoppingListId], references: [id], onDelete: Cascade)
+  product         Product      @relation(fields: [productId], references: [id])
+
+  @@unique([shoppingListId, productId])
+  @@map("shopping_list_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REWARDS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Reward {
+  id          String       @id @default(cuid())
+  userId      String
+  points      Int
+  reason      RewardReason
+  referenceId String?      // e.g. the priceReportId that earned this reward
+  description String?
+  createdAt   DateTime     @default(now())
+
+  user        User         @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("rewards")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS & FAVORITES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PriceAlert {
+  id          String   @id @default(cuid())
+  userId      String
+  productId   String
+  targetPrice Decimal  @db.Decimal(10, 2)
+  isActive    Boolean  @default(true)
+  triggeredAt DateTime?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@index([userId])
+  @@index([productId, isActive])
+  @@map("price_alerts")
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@unique([userId, productId])
+  @@map("favorites")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OFFERS / PROMOTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Offer {
+  id          String   @id @default(cuid())
+  storeId     String
+  title       String                        // "Weekend Offers — Up to 30% Off"
+  description String?
+  imageUrl    String?
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  store       Store    @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, isActive])
+  @@index([endsAt])
+  @@map("offers")
+}
